@@ -305,21 +305,13 @@ class MainActivity : AppCompatActivity() {
             intent?.let {
                 if (it.action == VuzixSpeechClient.ACTION_VOICE_COMMAND) {
                     val phrase = it.getStringExtra(VuzixSpeechClient.PHRASE_STRING_EXTRA)
-
-
-                    Log.d("VuzixVoiceDebug", "--> Frase Reconhecida: '$phrase'")
-                    Log.d("VuzixVoiceDebug", "--> Modo Pergunta Ativo? $isAskingQuestion")
-
-
                     if ( phrase?.equals("describe_scene", ignoreCase = true) == true) {
-                        Log.d("VuzixVoiceDebug", "CONDIÇÃO ATENDIDA! Enviando para o servidor...")
                         sendQuestionToServer(phrase) // Agora esta função será chamada
                     }
                     else if (phrase?.equals("ok", ignoreCase = true) == true) {
-                        Log.d("VuzixVoiceDebug", "Comando 'ok' recebido.")
                         confirmationSoundPlayer?.start()
                     } else {
-                        Log.d("VuzixVoiceDebug", "Frase ouvida, mas não correspondeu a nenhuma condição.")
+                        Log.d("VuzixVoiceDebug", "Command heard, but not recognized: $phrase")
                     }
                 }
             }
@@ -351,8 +343,6 @@ class MainActivity : AppCompatActivity() {
             put("text", formattedQuestion)
         }
 
-        // Pequeno atraso para dar tempo à conexão de se estabelecer, se foi recém-criada.
-        // Esta é uma solução simples; uma mais robusta usaria callbacks de conexão.
         Handler(Looper.getMainLooper()).postDelayed({
             webSocket?.send(requestJson.toString())
             isAskingQuestion = false // Reseta o estado
