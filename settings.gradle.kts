@@ -22,5 +22,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Vuzix"
+rootProject.name = "VuzixEXTERNAL"
 include(":app")

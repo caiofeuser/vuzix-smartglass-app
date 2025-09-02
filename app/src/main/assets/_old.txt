@@ -1,0 +1,6 @@
+airpod[tool4-stage2]
+glassbox[tool5-stage3]
+mousepad[tool6-stage3]
+mug[tool1-stage1]
+phone[tool3-stage2]
+wallet [tool2-stage1]
