@@ -31,7 +31,7 @@ import androidx.core.content.ContextCompat
 import com.vuzix.sdk.speechrecognitionservice.VuzixSpeechClient
 import okhttp3.*
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
+
 
 class MainActivity : AppCompatActivity() {
 
@@ -51,14 +51,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var handler: Handler
     private lateinit var handlerThread: HandlerThread
     private val paint = Paint()
-    private var labels = listOf<String>()
     private val colors = listOf(Color.BLUE, Color.GREEN, Color.RED, Color.CYAN, Color.MAGENTA)
+    private var labels = listOf<String>()
     private var capturedBitmapForQuestion: Bitmap? = null
 
     // Network & Data
-    private val okHttpClient = OkHttpClient()
-    private var webSocket: WebSocket? = null
-    private data class DetectionResult(val box: RectF, val label: String)
+    private lateinit var webSocketManager: WebSocketManager
     private var voiceCommandReceiver: VoiceCommandReceiver? = null
     private var confirmationSoundPlayer: MediaPlayer? = null
 
@@ -150,11 +148,7 @@ class MainActivity : AppCompatActivity() {
         showFeedbackText("Please say 'describe scene'")
     }
 
-    private fun ensureWebSocketConnection() {
-        if (webSocket == null) {
-            startWebSocket()
-        }
-    }
+
 
     private fun showFeedbackText(message: String, durationInMillis: Long = 3000) {
         runOnUiThread {
@@ -172,9 +166,7 @@ class MainActivity : AppCompatActivity() {
         isDetectionRunning = !isDetectionRunning
         if (isDetectionRunning) {
             detectionButton.text = "Stop Detection"
-            if (webSocket == null) {
-                startWebSocket()
-            }
+            webSocketManager.ensureConnection()
         } else {
             detectionButton.text = "Detect"
             // Clean the screen
@@ -204,15 +196,7 @@ class MainActivity : AppCompatActivity() {
             if (isDetectionRunning && !isProcessingFrame) {
                 isProcessingFrame = true
                 val bitmap = textureView.bitmap ?: run { isProcessingFrame = false; return }
-                val stream = ByteArrayOutputStream()
-                bitmap.compress(Bitmap.CompressFormat.JPEG, 50, stream)
-                val byteArray = stream.toByteArray()
-
-                val body = JSONObject().apply {
-                    put("type", "detection")
-                    put("image", Base64.encodeToString(byteArray, Base64.NO_WRAP))
-                }
-                webSocket?.send(body.toString())
+                webSocketManager.sendQuestion(bitmap)
             }
         }
     }
@@ -238,8 +222,8 @@ class MainActivity : AppCompatActivity() {
                             boxArray.getDouble(0).toFloat(), boxArray.getDouble(1).toFloat(),
                             boxArray.getDouble(2).toFloat(), boxArray.getDouble(3).toFloat()
                         )
-                        val label = labels.getOrElse(classes.getInt(i)) { "unknown" }
-                        newDetections.add(DetectionResult(box, label))
+//                        val label = labels.getOrElse(classes.getInt(i)) { "unknown" }
+                        newDetections.add(DetectionResult(box, classes.getInt(i)))
                     }
 
                     runOnUiThread {
@@ -277,7 +261,9 @@ class MainActivity : AppCompatActivity() {
     private fun handleStationLogic(detections: List<DetectionResult>) {
         val requiredLabels =
             setOf("cell phone", "cup") //<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-        val detectedLabels = detections.map { it.label }.toSet()
+        val detectedLabels = detections.map { detection ->
+            labels.getOrElse(detection.classId) { "unknown" }
+        }.toSet()
 
         val conditionMet = detectedLabels.containsAll(requiredLabels)
 
@@ -296,7 +282,7 @@ class MainActivity : AppCompatActivity() {
         voiceCommandReceiver?.let { unregisterReceiver(it) }
         if (::cameraDevice.isInitialized) cameraDevice.close()
         handlerThread.quitSafely()
-        stopWebSocket()
+        webSocketManager.stop()
         confirmationSoundPlayer?.release()
     }
 
@@ -319,8 +305,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun sendQuestionToServer(question: String) {
-        // MODIFIED: Garante que a conexão com o servidor está ativa ANTES de enviar.
-        ensureWebSocketConnection()
+        webSocketManager.ensureConnection()
 
         runOnUiThread { loadingIndicator.visibility = View.VISIBLE }
 
@@ -329,36 +314,12 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread { loadingIndicator.visibility = View.GONE }
             return
         }
-
-        val stream = ByteArrayOutputStream()
-        bitmap.compress(Bitmap.CompressFormat.JPEG, 90, stream)
-        val byteArray = stream.toByteArray()
-        val imageBase64 = Base64.encodeToString(byteArray, Base64.NO_WRAP)
-
-        val formattedQuestion = "Based on this image, please describe the scene in front of me."
-
-        val requestJson = JSONObject().apply {
-            put("type", "question")
-            put("image", imageBase64)
-            put("text", formattedQuestion)
-        }
+        val formattedQuestion = "Based on this image, please briefly describe the scene in front of me."
 
         Handler(Looper.getMainLooper()).postDelayed({
-            webSocket?.send(requestJson.toString())
+            webSocketManager.sendQuestion(bitmap, question)
             isAskingQuestion = false // Reseta o estado
         }, 500) // Atraso de 500ms
-    }
-
-    private fun startWebSocket() {
-        Log.e("WebSocket", "Connection Selected")
-        val ipAddress = "172.20.10.3"
-        val request = Request.Builder().url("ws://$ipAddress:8000/ws").build()
-        webSocket = okHttpClient.newWebSocket(request, SocketListener())
-    }
-
-    private fun stopWebSocket() {
-        webSocket?.close(1000, "Activity Closing")
-        webSocket = null
     }
 
     private fun drawOverlay(detections: List<DetectionResult>) {
@@ -378,7 +339,8 @@ class MainActivity : AppCompatActivity() {
             )
             canvas.drawRect(rect, paint)
             paint.style = Paint.Style.FILL
-            canvas.drawText(detection.label, rect.left + 10, rect.top + 30, paint)
+            val label = labels.getOrElse(detection.classId) { "unknown" }
+            canvas.drawText(label, rect.left + 10, rect.top + 30, paint)
         }
         imageView.setImageBitmap(bitmap)
     }
