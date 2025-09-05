@@ -4,18 +4,15 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     tools:context=".MainActivity">
-
     <TextureView
         android:id="@+id/textureView"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
-
     <ImageView
         android:id="@+id/imageView"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:background="@android:color/transparent" />
-
     <Button
         android:id="@+id/stage1Button"
         android:layout_width="wrap_content"
@@ -24,7 +21,6 @@
         android:text="Trigger Stage 1"
         android:visibility="gone"
         tools:visibility="visible" />
-
     <TextView
         android:id="@+id/feedbackTextView"
         android:layout_width="match_parent"
@@ -38,14 +34,12 @@
         android:visibility="gone"
         tools:text="Esta é uma mensagem de feedback"
         tools:visibility="visible" />
-
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom|center_horizontal"
         android:orientation="horizontal"
         android:padding="8dp">
-
         <Button
             android:id="@+id/detectionButton"
             android:layout_width="0dp"
@@ -76,5 +70,4 @@
         android:layout_gravity="center"
         android:visibility="gone"
         tools:visibility="visible" />
-
 </FrameLayout>

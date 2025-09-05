@@ -2,39 +2,32 @@ package com.example.vuzix
 
 import android.Manifest
 import android.annotation.SuppressLint
-import android.content.BroadcastReceiver
-import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.graphics.*
+import android.graphics.Bitmap
+import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.media.MediaPlayer
-import android.widget.ProgressBar
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
-import android.util.Base64
 import android.util.Log
 import android.view.Surface
 import android.view.TextureView
 import android.view.View
 import android.widget.Button
 import android.widget.ImageView
+import android.widget.ProgressBar
 import android.widget.TextView
-import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.vuzix.sdk.speechrecognitionservice.VuzixSpeechClient
-import okhttp3.*
-import org.json.JSONObject
+import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 
-
-class MainActivity : AppCompatActivity() {
-
+class MainActivity : AppCompatActivity(), SocketListenerInterface, VoiceCommandListener {
     // UI
     private lateinit var textureView: TextureView
     private lateinit var imageView: ImageView
@@ -50,14 +43,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var cameraDevice: CameraDevice
     private lateinit var handler: Handler
     private lateinit var handlerThread: HandlerThread
-    private val paint = Paint()
-    private val colors = listOf(Color.BLUE, Color.GREEN, Color.RED, Color.CYAN, Color.MAGENTA)
     private var labels = listOf<String>()
     private var capturedBitmapForQuestion: Bitmap? = null
 
     // Network & Data
     private lateinit var webSocketManager: WebSocketManager
-    private var voiceCommandReceiver: VoiceCommandReceiver? = null
+    private lateinit var overlayManager: OverlayManager
+    private var voiceCommandManager: VuzixVoiceManager?= null
+
     private var confirmationSoundPlayer: MediaPlayer? = null
 
     // --- States
@@ -89,8 +82,14 @@ class MainActivity : AppCompatActivity() {
         handlerThread.start()
         handler = Handler(handlerThread.looper)
 
+        // Managers
+        webSocketManager = WebSocketManager(this)
+        overlayManager = OverlayManager(findViewById(R.id.imageView))
+        voiceCommandManager = VuzixVoiceManager(this, this)
+
+        confirmationSoundPlayer = MediaPlayer.create(this, R.raw.confirmation_beep)
+
         // Get elements
-        imageView = findViewById(R.id.imageView)
         feedbackTextView = findViewById(R.id.feedbackTextView)
         textureView = findViewById(R.id.textureView)
         textureView.surfaceTextureListener = textureListener
@@ -104,35 +103,36 @@ class MainActivity : AppCompatActivity() {
         quitButton.setOnClickListener { finish() }
         detectionButton.setOnClickListener { toggleDetection() }
         askQuestionButton.setOnClickListener { captureFrameAndAskQuestion() }
+
         stage1Button.setOnClickListener { view ->
             Toast.makeText(this, "Stage 1 Process Started!", Toast.LENGTH_SHORT).show()
             Handler(Looper.getMainLooper()).postDelayed({
-                // This code will run after the delay
                 view.visibility = View.GONE
             }, 2000)
 
         }
+    }
 
-        voiceCommandReceiver = VoiceCommandReceiver()
-        val filter = IntentFilter(VuzixSpeechClient.ACTION_VOICE_COMMAND)
-        registerReceiver(voiceCommandReceiver, filter, RECEIVER_NOT_EXPORTED)
-        try {
-            val vuzixSpeechClient = VuzixSpeechClient(this)
-            vuzixSpeechClient.insertPhrase("describe scene") // A specific command for our new feature
-            vuzixSpeechClient.insertPhrase("ok")             // A generic confirmation command
-            println(vuzixSpeechClient.phrases)
-        } catch (e: Exception) {
-            Log.e("VuzixSpeech", "Error registering phrase: ${e.message}")
+    private fun toggleDetection() {
+        isDetectionRunning = !isDetectionRunning
+        if (isDetectionRunning) {
+            webSocketManager.ensureConnection()
+            detectionButton.text = "Stop Detection"
+        } else {
+            detectionButton.text = "Detect"
+            // Clean the screen
+            runOnUiThread {
+                overlayManager.clear()
+                stage1Button.visibility = View.GONE
+                isStage1Detected = false
+            }
         }
-
-        confirmationSoundPlayer = MediaPlayer.create(this, R.raw.confirmation_beep)
     }
 
     private fun captureFrameAndAskQuestion() {
         if (isDetectionRunning) {
             toggleDetection() // Pause detection
         }
-
 
         isAskingQuestion = true
         capturedBitmapForQuestion = textureView.bitmap
@@ -143,124 +143,47 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-
         VuzixSpeechClient.TriggerVoiceAudio(this, true)
         showFeedbackText("Please say 'describe scene'")
     }
 
-
-
-    private fun showFeedbackText(message: String, durationInMillis: Long = 3000) {
+    override fun onDetectionsReceived(detections: List<DetectionResult>) {
         runOnUiThread {
-            feedbackTextView.text = message
-            feedbackTextView.visibility = View.VISIBLE
-            // Agenda para esconder o texto após 'durationInMillis'
-            Handler(Looper.getMainLooper()).postDelayed({
-                feedbackTextView.visibility = View.GONE
-            }, durationInMillis)
-        }
-    }
-
-    private fun toggleDetection() {
-        println("Connecting with the server")
-        isDetectionRunning = !isDetectionRunning
-        if (isDetectionRunning) {
-            detectionButton.text = "Stop Detection"
-            webSocketManager.ensureConnection()
-        } else {
-            detectionButton.text = "Detect"
-            // Clean the screen
-            runOnUiThread {
-                drawOverlay(emptyList())
-                stage1Button.visibility = View.GONE
-                isStage1Detected = false
+            if (isDetectionRunning) {
+                handleStationLogic(detections)
+                overlayManager.draw(detections, labels)
             }
         }
     }
 
-    private val textureListener = object : TextureView.SurfaceTextureListener {
-        override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
-            openCamera()
-        }
-
-        override fun onSurfaceTextureSizeChanged(
-            surface: SurfaceTexture,
-            width: Int,
-            height: Int
-        ) {
-        }
-
-        override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean = true
-        override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {
-            // It's called upon each frame of the camera
-            if (isDetectionRunning && !isProcessingFrame) {
-                isProcessingFrame = true
-                val bitmap = textureView.bitmap ?: run { isProcessingFrame = false; return }
-                webSocketManager.sendQuestion(bitmap)
+    private fun showLlmAnswerDialog(answer: String) {
+        AlertDialog.Builder(this)
+            .setTitle("AI Assistant")
+            .setMessage(answer)
+            .setPositiveButton("OK") { dialog, _ ->
+                dialog.dismiss()
             }
+            .show()
+    }
+
+    override fun onLLMAnswerReceived(answer: String) {
+        println("llm answer received: $answer")
+        runOnUiThread {
+            loadingIndicator.visibility = View.GONE
+            showLlmAnswerDialog(answer)
+
         }
     }
 
-    private inner class SocketListener : WebSocketListener() {
-        override fun onOpen(webSocket: WebSocket, response: Response) {
-            Log.d("WebSocket", "Connected to server!")
-        }
-
-        override fun onMessage(webSocket: WebSocket, text: String) {
-            try {
-                val json = JSONObject(text)
-                if (json.getString("type") == "detection_results") {
-
-                    val newDetections = mutableListOf<DetectionResult>()
-                    val jsonDetections = json.getJSONObject("detections")
-                    val boxes = jsonDetections.getJSONArray("boxes")
-                    val classes = jsonDetections.getJSONArray("classes")
-
-                    for (i in 0 until boxes.length()) {
-                        val boxArray = boxes.getJSONArray(i)
-                        val box = RectF(
-                            boxArray.getDouble(0).toFloat(), boxArray.getDouble(1).toFloat(),
-                            boxArray.getDouble(2).toFloat(), boxArray.getDouble(3).toFloat()
-                        )
-//                        val label = labels.getOrElse(classes.getInt(i)) { "unknown" }
-                        newDetections.add(DetectionResult(box, classes.getInt(i)))
-                    }
-
-                    runOnUiThread {
-                        if (isDetectionRunning) {
-                            handleStationLogic(newDetections)
-                            drawOverlay(newDetections)
-                        }
-                    }
-                } else if (json.getString("type") == "llm_answer") {
-                    val answer = json.getString("text")
-                    runOnUiThread {
-                        showFeedbackText(answer, 10000) // Mostra por 10 segundos
-                        runOnUiThread { loadingIndicator.visibility = View.GONE }
-                    }
-                    // Esconde o indicador de carregamento
-                    runOnUiThread { loadingIndicator.visibility = View.GONE }
-
-                } else {
-
-                }
-
-            } catch (e: Exception) {
-                Log.e("WebSocket", "Error parsing JSON: ${e.message}")
-            }
-            isProcessingFrame = false
-        }
-
-        override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            Log.e("WebSocket", "Connection Failed: ${t.message}")
-            isProcessingFrame = false
+    override fun onConnectionFailed() {
+        runOnUiThread {
+            Toast.makeText(this, "Connection Failed", Toast.LENGTH_SHORT).show()
+            if (isDetectionRunning) toggleDetection()
         }
     }
-
 
     private fun handleStationLogic(detections: List<DetectionResult>) {
-        val requiredLabels =
-            setOf("cell phone", "cup") //<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+        val requiredLabels = setOf("cell phone", "cup") // <==
         val detectedLabels = detections.map { detection ->
             labels.getOrElse(detection.classId) { "unknown" }
         }.toSet()
@@ -279,71 +202,27 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        voiceCommandReceiver?.let { unregisterReceiver(it) }
+        webSocketManager.stop()
+        voiceCommandManager?.unregister()
+        confirmationSoundPlayer?.release()
         if (::cameraDevice.isInitialized) cameraDevice.close()
         handlerThread.quitSafely()
-        webSocketManager.stop()
-        confirmationSoundPlayer?.release()
     }
 
-    inner class VoiceCommandReceiver : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            intent?.let {
-                if (it.action == VuzixSpeechClient.ACTION_VOICE_COMMAND) {
-                    val phrase = it.getStringExtra(VuzixSpeechClient.PHRASE_STRING_EXTRA)
-                    if ( phrase?.equals("describe_scene", ignoreCase = true) == true) {
-                        sendQuestionToServer(phrase) // Agora esta função será chamada
-                    }
-                    else if (phrase?.equals("ok", ignoreCase = true) == true) {
-                        confirmationSoundPlayer?.start()
-                    } else {
-                        Log.d("VuzixVoiceDebug", "Command heard, but not recognized: $phrase")
-                    }
-                }
-            }
-        }
+    override fun onResume() {
+        super.onResume()
+        // This is called every time your app becomes the active screen.
+        // tells the voice manager to start listening.
+        voiceCommandManager?.register()
     }
 
-    private fun sendQuestionToServer(question: String) {
-        webSocketManager.ensureConnection()
-
-        runOnUiThread { loadingIndicator.visibility = View.VISIBLE }
-
-        val bitmap = capturedBitmapForQuestion ?: run {
-            isAskingQuestion = false
-            runOnUiThread { loadingIndicator.visibility = View.GONE }
-            return
-        }
-        val formattedQuestion = "Based on this image, please briefly describe the scene in front of me."
-
-        Handler(Looper.getMainLooper()).postDelayed({
-            webSocketManager.sendQuestion(bitmap, question)
-            isAskingQuestion = false // Reseta o estado
-        }, 500) // Atraso de 500ms
+    override fun onPause() {
+        super.onPause()
+        // This is called every time your app goes into the background.
+        // tells the voice manager to stop listening to save battery.
+        voiceCommandManager?.unregister()
     }
 
-    private fun drawOverlay(detections: List<DetectionResult>) {
-        val bitmap = Bitmap.createBitmap(imageView.width, imageView.height, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-        paint.textSize = 40f
-        paint.strokeWidth = 5f
-
-        detections.forEachIndexed { index, detection ->
-            paint.color = colors[index % colors.size]
-            paint.style = Paint.Style.STROKE
-            val rect = RectF(
-                detection.box.left * canvas.width,
-                detection.box.top * canvas.height,
-                detection.box.right * canvas.width,
-                detection.box.bottom * canvas.height
-            )
-            canvas.drawRect(rect, paint)
-            paint.style = Paint.Style.FILL
-            val label = labels.getOrElse(detection.classId) { "unknown" }
-            canvas.drawText(label, rect.left + 10, rect.top + 30, paint)
-        }
-        imageView.setImageBitmap(bitmap)
-    }
 
     private fun getPermission() {
         val permissionsToRequest = mutableListOf<String>()
@@ -377,9 +256,57 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onVoiceCommand(phrase: String) {
+        webSocketManager.ensureConnection()
+        Log.d("MainActivity", "Voice command received from manager: $phrase")
+        if (phrase.equals("describe_scene", ignoreCase = true)) {
+            val bitmap = capturedBitmapForQuestion
+            println("bit map is null? : ${bitmap == null}")
+            if (bitmap != null) {
+                loadingIndicator.visibility = View.VISIBLE
+                showFeedbackText("Analyzing image...", 5000)
+                val question = "Describe in detail what you see in this image."
+                webSocketManager.sendQuestion(bitmap, question)
+            } else {
+                showFeedbackText("Error: Image was not captured.")
+            }
+        } else if (phrase.equals("ok", ignoreCase = true)) {
+            Log.d("MainActivity", "OK received")
+        } else {
+            Log.d("MainActivity", "Unknown voice command: $phrase")
+        }
+
+    }
+
+    private val textureListener = object : TextureView.SurfaceTextureListener {
+        override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
+            openCamera()
+        }
+
+        override fun onSurfaceTextureSizeChanged(
+            surface: SurfaceTexture,
+            width: Int,
+            height: Int
+        ) {}
+
+        override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean = true
+
+        override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {
+            if (isDetectionRunning && !isProcessingFrame) {
+                isProcessingFrame = true
+                val bitmap = textureView.bitmap ?: run {
+                    isProcessingFrame = false
+                    return
+                }
+
+                webSocketManager.sendDetectionImage(bitmap)
+                isProcessingFrame = false
+            }
+        }
+    }
     @SuppressLint("MissingPermission")
     private fun openCamera() {
-        cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        cameraManager = getSystemService(CAMERA_SERVICE) as CameraManager
         cameraManager.openCamera(
             cameraManager.cameraIdList[0],
             object : CameraDevice.StateCallback() {
@@ -409,5 +336,15 @@ class MainActivity : AppCompatActivity() {
             },
             handler
         )
+    }
+    private fun showFeedbackText(message: String, durationInMillis: Long = 3000) {
+        runOnUiThread {
+            feedbackTextView.text = message
+            feedbackTextView.visibility = View.VISIBLE
+            // Agenda para esconder o texto após 'durationInMillis'
+            Handler(Looper.getMainLooper()).postDelayed({
+                feedbackTextView.visibility = View.GONE
+            }, durationInMillis)
+        }
     }
 }

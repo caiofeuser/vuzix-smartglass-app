@@ -5,16 +5,7 @@ import android.util.Log
 import okhttp3.*
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
-
-interface SocketListenerInterface {
-    fun onDetectionsReceived(detection: List<DetectionResult>)
-    fun onLLMAnswerReceived(answer: String)
-    fun onConnectionFailed()
-}
-
-
 class WebSocketManager(private val listener: SocketListenerInterface) {
-
     private val okHttpClient = OkHttpClient()
     private var webSocket: WebSocket? = null
 
@@ -29,7 +20,17 @@ class WebSocketManager(private val listener: SocketListenerInterface) {
         webSocket = okHttpClient.newWebSocket(request, SocketListener())
     }
 
+    fun sendDetectionImage(bitmap: Bitmap) {
+        val stream = ByteArrayOutputStream()
+        bitmap.compress(Bitmap.CompressFormat.JPEG, 50, stream)
+        val requestJson = JSONObject().apply {
+            put("type", "detection")
+            put("image", Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP))
+        }
+        webSocket?.send(requestJson.toString())
+    }
     fun sendQuestion(bitmap: Bitmap, question: String = "Describe the image") {
+        Log.d("WebSocketManager", "Sending question: $question")
         val stream = ByteArrayOutputStream()
         bitmap.compress(Bitmap.CompressFormat.JPEG, 90, stream)
         val imageBase64 = Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
@@ -41,6 +42,7 @@ class WebSocketManager(private val listener: SocketListenerInterface) {
         }
         webSocket?.send(requestJson.toString())
     }
+
     fun ensureConnection() {
         if (webSocket == null) {
             start()
@@ -69,7 +71,7 @@ class WebSocketManager(private val listener: SocketListenerInterface) {
 
     inner class SocketListener : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
-            Log.d("WebSocketManager", "Conexão aberta com o servidor!")
+            Log.d("WebSocketManager", "Connected with the server")
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
@@ -78,11 +80,11 @@ class WebSocketManager(private val listener: SocketListenerInterface) {
                 when (json.getString("type")) {
                     "detection_results" -> {
                         val detections = parseDetections(json)
-                        listener.onDetectionsReceived(detections) // CHAMA O CALLBACK
+                        listener.onDetectionsReceived(detections) // CALL THE CALLBACK
                     }
                     "llm_answer" -> {
                         val answer = json.getString("text")
-                        listener.onLLMAnswerReceived(answer) // CHAMA O CALLBACK
+                        listener.onLLMAnswerReceived(answer) // CALL THE CALLBACK
                     }
                 }
             } catch (e: Exception) {
@@ -92,7 +94,7 @@ class WebSocketManager(private val listener: SocketListenerInterface) {
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             Log.e("WebSocketManager", "Falha na conexão: ${t.message}")
-            listener.onConnectionFailed() // CHAMA O CALLBACK
+            listener.onConnectionFailed() // CALL THE CALLBACK
         }
     }
 
