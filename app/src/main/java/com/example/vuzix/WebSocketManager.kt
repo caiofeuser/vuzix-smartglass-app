@@ -13,6 +13,7 @@ class WebSocketManager(private val listener: SocketListenerInterface) {
         webSocket?.close(1000, "Activity Closing")
         webSocket = null
     }
+
     fun start() {
         Log.e("WebSocket", "Connection Selected")
         val ipAddress = "172.20.10.3"
@@ -21,19 +22,34 @@ class WebSocketManager(private val listener: SocketListenerInterface) {
     }
 
     fun sendDetectionImage(bitmap: Bitmap) {
-        val stream = ByteArrayOutputStream()
-        bitmap.compress(Bitmap.CompressFormat.JPEG, 50, stream)
+        val bitmapArr = bitmapToByteArray(bitmap)
         val requestJson = JSONObject().apply {
             put("type", "detection")
-            put("image", Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP))
+            put("image", Base64.encodeToString(bitmapArr, Base64.NO_WRAP))
         }
         webSocket?.send(requestJson.toString())
     }
-    fun sendQuestion(bitmap: Bitmap, question: String = "Describe the image") {
+
+    fun sendAudioQuestion(bitmap: Bitmap, audioBytes: ByteArray) {
+        val imageBase64 = Base64.encodeToString(bitmapToByteArray(bitmap), Base64.NO_WRAP)
+        val audioBase64 = Base64.encodeToString(audioBytes, Base64.NO_WRAP)
+
+        val requestJson = JSONObject().apply {
+            put("type", "audio_question")
+            put("image", imageBase64)
+            put("audio", audioBase64)
+        }
+
+        print(audioBase64)
+        println(requestJson)
+
+        webSocket?.send(requestJson.toString())
+    }
+
+    fun sendQuestion(bitmap: Bitmap, question: String) {
         Log.d("WebSocketManager", "Sending question: $question")
-        val stream = ByteArrayOutputStream()
-        bitmap.compress(Bitmap.CompressFormat.JPEG, 90, stream)
-        val imageBase64 = Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
+        val bitmapArr = bitmapToByteArray(bitmap)
+        val imageBase64 = Base64.encodeToString(bitmapArr, Base64.NO_WRAP)
 
         val requestJson = JSONObject().apply {
             put("type", "question")
@@ -48,6 +64,7 @@ class WebSocketManager(private val listener: SocketListenerInterface) {
             start()
         }
     }
+
     private fun parseDetections(json: JSONObject): List<DetectionResult> {
         val newDetections = mutableListOf<DetectionResult>()
         try {
@@ -80,11 +97,11 @@ class WebSocketManager(private val listener: SocketListenerInterface) {
                 when (json.getString("type")) {
                     "detection_results" -> {
                         val detections = parseDetections(json)
-                        listener.onDetectionsReceived(detections) // CALL THE CALLBACK
+                        listener.onDetectionsReceived(detections)
                     }
                     "llm_answer" -> {
                         val answer = json.getString("text")
-                        listener.onLLMAnswerReceived(answer) // CALL THE CALLBACK
+                        listener.onLLMAnswerReceived(answer)
                     }
                 }
             } catch (e: Exception) {
@@ -93,9 +110,15 @@ class WebSocketManager(private val listener: SocketListenerInterface) {
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            Log.e("WebSocketManager", "Falha na conexão: ${t.message}")
-            listener.onConnectionFailed() // CALL THE CALLBACK
+            Log.e("WebSocketManager", "Connection Failed: ${t.message}")
+            listener.onConnectionFailed()
         }
+    }
+
+    private fun bitmapToByteArray(bitmap: Bitmap, quality: Int = 90): ByteArray {
+        val stream = ByteArrayOutputStream()
+        bitmap.compress(Bitmap.CompressFormat.JPEG, quality, stream)
+        return stream.toByteArray()
     }
 
 }

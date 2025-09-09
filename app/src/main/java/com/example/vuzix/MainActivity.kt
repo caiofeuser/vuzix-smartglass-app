@@ -9,6 +9,8 @@ import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.media.MediaPlayer
+import android.media.MediaRecorder
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
@@ -18,22 +20,23 @@ import android.view.Surface
 import android.view.TextureView
 import android.view.View
 import android.widget.Button
-import android.widget.ImageView
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.vuzix.sdk.speechrecognitionservice.VuzixSpeechClient
 import android.widget.Toast
+import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AlertDialog
+import java.io.File
+import java.io.IOException
 
 class MainActivity : AppCompatActivity(), SocketListenerInterface, VoiceCommandListener {
     // UI
     private lateinit var textureView: TextureView
-    private lateinit var imageView: ImageView
     private lateinit var detectionButton: Button
     private lateinit var askQuestionButton: Button
-    private lateinit var stage1Button: Button // RE-ADICIONADO
+    private lateinit var stage1Button: Button
     private lateinit var feedbackTextView: TextView
     private lateinit var loadingIndicator: ProgressBar
     private lateinit var quitButton: Button
@@ -62,8 +65,13 @@ class MainActivity : AppCompatActivity(), SocketListenerInterface, VoiceCommandL
     private var isAskingQuestion = false
     @Volatile
     private var isProcessingFrame = false
+    private var mediaRecorder: MediaRecorder? = null
+    private var audioOutputFile: String? = null
+    @Volatile
+    private var isRecordingAudio = false
 
     // onCreate <=> useEffect(()=>{},[])
+    @RequiresApi(Build.VERSION_CODES.S)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -99,11 +107,16 @@ class MainActivity : AppCompatActivity(), SocketListenerInterface, VoiceCommandL
         stage1Button = findViewById(R.id.stage1Button)
         quitButton = findViewById<Button>(R.id.quitButton)
 
+        audioOutputFile = "${externalCacheDir?.absolutePath}/question_audio.ogg"
+
         // Listeners
         quitButton.setOnClickListener { finish() }
         detectionButton.setOnClickListener { toggleDetection() }
-        askQuestionButton.setOnClickListener { captureFrameAndAskQuestion() }
+//        askQuestionButton.setOnClickListener { captureFrameAndAskQuestion() }
 
+        askQuestionButton.setOnClickListener {
+            toggleAudioRecording()
+        }
         stage1Button.setOnClickListener { view ->
             Toast.makeText(this, "Stage 1 Process Started!", Toast.LENGTH_SHORT).show()
             Handler(Looper.getMainLooper()).postDelayed({
@@ -111,6 +124,72 @@ class MainActivity : AppCompatActivity(), SocketListenerInterface, VoiceCommandL
             }, 2000)
 
         }
+    }
+
+
+    @RequiresApi(Build.VERSION_CODES.S)
+    private fun toggleAudioRecording() {
+        isRecordingAudio = !isRecordingAudio
+        if (isRecordingAudio) {
+            if (isDetectionRunning) toggleDetection()
+
+            webSocketManager.ensureConnection()
+
+            capturedBitmapForQuestion = textureView.bitmap
+            if (capturedBitmapForQuestion == null) {
+                Toast.makeText(this, "Câmera não pronta.", Toast.LENGTH_SHORT).show()
+                isRecordingAudio = false // Reseta o estado
+                return
+            }
+
+            startAudioRecording()
+            askQuestionButton.text = "Stop Rec"
+            showFeedbackText("Recording your answer...")
+        } else {
+            stopAudioRecordingAndSend()
+            askQuestionButton.text = "Ask"
+            showFeedbackText("Processing...")
+        }
+    }
+
+    // NEW: Função para iniciar a gravação com MediaRecorder
+    private fun startAudioRecording() {
+        // MODIFIED: Use the default constructor which works on all API levels
+        mediaRecorder = MediaRecorder().apply {
+            setAudioSource(MediaRecorder.AudioSource.MIC)
+            setOutputFormat(MediaRecorder.OutputFormat.OGG)
+            setAudioEncoder(MediaRecorder.AudioEncoder.OPUS)
+            setAudioSamplingRate(16000)
+            setOutputFile(audioOutputFile)
+            try {
+                prepare()
+                start()
+                Log.d("MediaRecorder", "Recording started successfully.")
+            } catch (e: IOException) {
+                Log.e("MediaRecorder", "prepare() failed: ${e.message}")
+                // Optional: Show a toast to the user
+                Toast.makeText(this@MainActivity, "Failed to start recording.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+
+    private fun stopAudioRecordingAndSend() {
+        mediaRecorder?.apply {
+            stop()
+            release()
+        }
+        mediaRecorder = null
+
+        val bitmap = capturedBitmapForQuestion
+        val audioFile = File(audioOutputFile ?: return)
+
+        if (bitmap != null && audioFile.exists()) {
+            val audioBytes = audioFile.readBytes()
+            loadingIndicator.visibility = View.VISIBLE
+            webSocketManager.sendAudioQuestion(bitmap, audioBytes)
+        }
+        capturedBitmapForQuestion = null
     }
 
     private fun toggleDetection() {
@@ -167,7 +246,7 @@ class MainActivity : AppCompatActivity(), SocketListenerInterface, VoiceCommandL
     }
 
     override fun onLLMAnswerReceived(answer: String) {
-        println("llm answer received: $answer")
+//        println("llm answer received: $answer")
         runOnUiThread {
             loadingIndicator.visibility = View.GONE
             showLlmAnswerDialog(answer)
